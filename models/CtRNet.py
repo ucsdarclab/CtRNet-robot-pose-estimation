@@ -72,6 +72,14 @@ class CtRNet(torch.nn.Module):
         cTb = self.bpnp(points_2d, points_3d, self.K)
 
         return cTb, points_2d, foreground_mask
+    
+    def cTr_to_pose_matrix(self, cTr):
+        # cTr: (1, 6)
+        # pose_matrix: (4, 4)
+        pose_matrix = torch.eye(4, device=self.device)
+        pose_matrix[:3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3])
+        pose_matrix[:3, 3] = cTr[:, 3:]
+        return pose_matrix
 
 
 
