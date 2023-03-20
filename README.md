@@ -21,6 +21,10 @@ More details see "environment.yml".
 1. [DREAM dataset](https://github.com/NVlabs/DREAM/blob/master/data/DOWNLOAD.sh)
 2. [Baxter dataset](https://drive.google.com/file/d/12bCv6GBuh-FdvLGKjlUx2jPN-DBRUqUn/view?usp=share_link)
 
+## Weights
+
+Weights for Panda and Baxter can be found [here](https://drive.google.com/file/d/1OAamxl3_cMLdlpksNo0p-8K20fSMukbI/view?usp=share_link).
+
 ## Notes
 
 This repo is work-in-progress. Please stay tuned.
