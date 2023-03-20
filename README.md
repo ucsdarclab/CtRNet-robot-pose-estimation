@@ -15,3 +15,12 @@ Code is developed and tested on Ubuntu 20.04.
 - Transforms3d(0.3.1)
 
 More details see "environment.yml".
+
+## Dataset
+
+1. [DREAM dataset](https://github.com/NVlabs/DREAM/blob/master/data/DOWNLOAD.sh)
+2. [Baxter dataset](https://drive.google.com/file/d/12bCv6GBuh-FdvLGKjlUx2jPN-DBRUqUn/view?usp=share_link)
+
+## Notes
+
+This repo is work-in-progress. Please stay tuned.
