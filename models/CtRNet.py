@@ -68,10 +68,10 @@ class CtRNet(torch.nn.Module):
             points_3d = points_3d[[0,2,3,4,6,7,8]] # remove 1 and 5 links as they are dummy links
 
         #init_pose = torch.tensor([[  1.5497,  0.5420, -0.3909, -0.4698, -0.0211,  1.3243]])
-        #cTb = bpnp(points_2d_pred, points_3d, K, init_pose)
-        cTb = self.bpnp(points_2d, points_3d, self.K)
+        #cTr = bpnp(points_2d_pred, points_3d, K, init_pose)
+        cTr = self.bpnp(points_2d, points_3d, self.K)
 
-        return cTb, points_2d, foreground_mask
+        return cTr, points_2d, foreground_mask
     
     def cTr_to_pose_matrix(self, cTr):
         # cTr: (1, 6)
