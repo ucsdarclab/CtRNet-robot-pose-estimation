@@ -5,6 +5,8 @@ import numpy as np
 
 from .keypoint_seg_resnet import KeyPointSegNet
 from .BPnP import BPnP
+from .mesh_renderer import RobotMeshRenderer
+
 
 class CtRNet(torch.nn.Module):
     def __init__(self, args):
@@ -32,6 +34,8 @@ class CtRNet(torch.nn.Module):
 
         if args.evaluate == True:
             self.keypoint_seg_predictor.eval()
+        else:
+            self.keypoint_seg_predictor.train()
 
         # load BPnP
         self.bpnp = BPnP.apply
@@ -65,7 +69,7 @@ class CtRNet(torch.nn.Module):
         _,t_list = self.robot.get_joint_RT(joint_angles)
         points_3d = torch.from_numpy(np.array(t_list)).float().to(self.device)
         if self.args.robot_name == "Panda":
-            points_3d = points_3d[[0,2,3,4,6,7,8]] # remove 1 and 5 links as they are dummy links
+            points_3d = points_3d[[0,2,3,4,6,7,8]] # remove 1 and 5 links as they are overlapping with 2 and 6
 
         #init_pose = torch.tensor([[  1.5497,  0.5420, -0.3909, -0.4698, -0.0211,  1.3243]])
         #cTr = bpnp(points_2d_pred, points_3d, K, init_pose)
@@ -80,6 +84,47 @@ class CtRNet(torch.nn.Module):
         pose_matrix[:3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3])
         pose_matrix[:3, 3] = cTr[:, 3:]
         return pose_matrix
+    
+    def to_valid_R_batch(self, R):
+        # R is a batch of 3x3 rotation matrices
+        U, S, V = torch.svd(R)
+        return torch.bmm(U, V.transpose(1,2))
+    
+    def setup_robot_renderer(self, mesh_files):
+        # mesh_files: list of mesh files
+        focal_length = [-self.args.fx,-self.args.fy]
+        principal_point = [self.args.px, self.args.py]
+        image_size = [self.args.height,self.args.width]
+
+        robot_renderer = RobotMeshRenderer(
+            focal_length=focal_length, principal_point=principal_point, image_size=image_size, 
+            robot=self.robot, mesh_files=mesh_files, device=self.device)
+
+        return robot_renderer
+    
+    def render_single_robot_mask(self, cTr, robot_mesh, robot_renderer):
+        # cTr: (1, 6)
+        # img: (1, H, W)
+
+        R = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[0,:3][None])  # (1, 3, 3)
+        R = torch.transpose(R,1,2)
+        #R = to_valid_R_batch(R)
+        T = cTr[0,3:][None]   # (1, 3)
+
+        if T[0,-1] < 0:
+            rendered_image = robot_renderer.silhouette_renderer(meshes_world=robot_mesh, R = -R, T = -T)
+        else:
+            rendered_image = robot_renderer.silhouette_renderer(meshes_world=robot_mesh, R = R, T = T)
+        return rendered_image[..., 3]
+
+    
+
+    def train_on_batch(self, img, joint_angles, renderer):
+        # img: (B, 3, H, W)
+        # joint_angles: (B, 7)
+        pass
+
+
 
 
 
