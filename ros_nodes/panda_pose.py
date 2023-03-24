@@ -88,7 +88,7 @@ def gotData(img_msg, joint_msg):
         if args.use_gpu:
             image = image.cuda()
 
-        cTr, points_2d, segmentation = CtRNet.inference_single_image(image[None], joint_angles)
+        cTr, points_2d, segmentation = CtRNet.inference_single_image(image, joint_angles)
 
         print(cTr)
         qua = kornia.geometry.conversions.angle_axis_to_quaternion(cTr[:,:3]).detach().cpu().numpy().squeeze() # xyzw

@@ -60,12 +60,12 @@ class CtRNet(torch.nn.Module):
 
 
     def inference_single_image(self, img, joint_angles):
-        # img: (1, 3, H, W)
+        # img: (3, H, W)
         # joint_angles: (7)
         # robot: robot model
 
         # detect 2d keypoints and segmentation masks
-        points_2d, segmentation = self.keypoint_seg_predictor(img)
+        points_2d, segmentation = self.keypoint_seg_predictor(img[None])
         foreground_mask = torch.sigmoid(segmentation)
         _,t_list = self.robot.get_joint_RT(joint_angles)
         points_3d = torch.from_numpy(np.array(t_list)).float().to(self.device)
@@ -132,13 +132,13 @@ class CtRNet(torch.nn.Module):
         return robot_renderer
     
     def render_single_robot_mask(self, cTr, robot_mesh, robot_renderer):
-        # cTr: (1, 6)
+        # cTr: (6)
         # img: (1, H, W)
 
-        R = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[0,:3][None])  # (1, 3, 3)
+        R = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:3][None])  # (1, 3, 3)
         R = torch.transpose(R,1,2)
         #R = to_valid_R_batch(R)
-        T = cTr[0,3:][None]   # (1, 3)
+        T = cTr[3:][None]   # (1, 3)
 
         if T[0,-1] < 0:
             rendered_image = robot_renderer.silhouette_renderer(meshes_world=robot_mesh, R = -R, T = -T)
