@@ -17,7 +17,7 @@ Code is developed and tested on Ubuntu 20.04.
 More details see `environment.yml`.
 
 ## Usage
-- See `inference.ipynb` for example single frame inference.
+- See `inference_single_frame.ipynb` for example single frame inference.
 - We provide ROS node for CtRNet, which subscribes image and joint state topics and publishes robot pose.
 ```
 python ros_node/panda_pose.py

@@ -34,6 +34,7 @@ args = parser.parse_args("")
 args.base_dir = "/home/jingpei/Desktop/CtRNet-robot-pose-estimation"
 args.use_gpu = True
 args.evaluate = True
+args.trained_on_multi_gpus = False
 args.keypoint_seg_model_path = os.path.join(args.base_dir,"weights/baxter/net.pth")
 args.urdf_file = os.path.join(args.base_dir,"urdfs/Baxter/baxter_description/urdf/baxter.urdf")
 args.robot_name = 'Baxter_left_arm' # "Panda" or "Baxter_left_arm"

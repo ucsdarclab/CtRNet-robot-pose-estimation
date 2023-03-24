@@ -25,7 +25,7 @@ class CtRNet(torch.nn.Module):
         if args.use_gpu:
             self.keypoint_seg_predictor = self.keypoint_seg_predictor.cuda()
 
-        if args.robot_name == "Panda":
+        if args.trained_on_multi_gpus == True:
             self.keypoint_seg_predictor = torch.nn.DataParallel(self.keypoint_seg_predictor, device_ids=[0])
         
         if args.keypoint_seg_model_path is not None:
