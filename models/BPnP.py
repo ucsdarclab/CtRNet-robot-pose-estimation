@@ -133,7 +133,8 @@ class BPnP_m3d(torch.autograd.Function):
             pts2d_i_np = np.ascontiguousarray(pts2d[i].detach().cpu()).reshape((n,1,2))
             pts3d_i_np = np.ascontiguousarray(pts3d[i].detach().cpu()).reshape((n,3))
             if ini_pose is None:
-                _, rvec0, T0, _ = cv.solvePnPRansac(objectPoints=pts3d_i_np, imagePoints=pts2d_i_np, cameraMatrix=K_np, distCoeffs=None, flags=cv.SOLVEPNP_ITERATIVE, confidence=0.9999 ,reprojectionError=1)
+                #_, rvec0, T0, _ = cv.solvePnPRansac(objectPoints=pts3d_i_np, imagePoints=pts2d_i_np, cameraMatrix=K_np, distCoeffs=None, flags=cv.SOLVEPNP_ITERATIVE, confidence=0.9999 ,reprojectionError=1)
+                _, rvec0, T0 = cv.solvePnP(objectPoints=pts3d_i_np, imagePoints=pts2d_i_np, cameraMatrix=K_np, distCoeffs=None, flags=cv.SOLVEPNP_EPNP)
             else:
                 rvec0 = np.array(ini_pose[i, 0:3].cpu().view(3, 1))
                 T0 = np.array(ini_pose[i, 3:6].cpu().view(3, 1))

@@ -4,7 +4,7 @@ import kornia
 import numpy as np
 
 from .keypoint_seg_resnet import KeyPointSegNet
-from .BPnP import BPnP
+from .BPnP import BPnP, BPnP_m3d
 from .mesh_renderer import RobotMeshRenderer
 
 
@@ -39,6 +39,7 @@ class CtRNet(torch.nn.Module):
 
         # load BPnP
         self.bpnp = BPnP.apply
+        self.bpnp_m3d = BPnP_m3d.apply
 
         # set up camera intrinsics
 
@@ -77,12 +78,40 @@ class CtRNet(torch.nn.Module):
 
         return cTr, points_2d, foreground_mask
     
+    def inference_batch_images(self, img, joint_angles):
+        # img: (B, 3, H, W)
+        # joint_angles: (B, 7)
+        # robot: robot model
+
+        # detect 2d keypoints and segmentation masks
+        points_2d, segmentation = self.keypoint_seg_predictor(img)
+        foreground_mask = torch.sigmoid(segmentation)
+
+        points_3d_batch = []
+        for b in range(joint_angles.shape[0]):
+            _,t_list = self.robot.get_joint_RT(joint_angles[b])
+            points_3d = torch.from_numpy(np.array(t_list)).float().to(self.device)
+            if self.args.robot_name == "Panda":
+                points_3d = points_3d[:,[0,2,3,4,6,7,8]]
+            points_3d_batch.append(points_3d[None])
+
+        points_3d_batch = torch.cat(points_3d_batch, dim=0)
+
+        cTr = self.bpnp_m3d(points_2d, points_3d_batch, self.K)
+
+        return cTr, points_2d, foreground_mask
+
+    
     def cTr_to_pose_matrix(self, cTr):
-        # cTr: (1, 6)
-        # pose_matrix: (4, 4)
-        pose_matrix = torch.eye(4, device=self.device)
-        pose_matrix[:3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3])
-        pose_matrix[:3, 3] = cTr[:, 3:]
+        """
+        cTr: (batch_size, 6)
+        pose_matrix: (batch_size, 4, 4)
+        """
+        batch_size = cTr.shape[0]
+        pose_matrix = torch.zeros((batch_size, 4, 4), device=self.device)
+        pose_matrix[:, :3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3])
+        pose_matrix[:, :3, 3] = cTr[:, 3:]
+        pose_matrix[:, 3, 3] = 1
         return pose_matrix
     
     def to_valid_R_batch(self, R):
