@@ -33,7 +33,6 @@ args = parser.parse_args("")
 
 args.base_dir = "/home/jingpei/Desktop/CtRNet-robot-pose-estimation"
 args.use_gpu = True
-args.evaluate = True
 args.trained_on_multi_gpus = True
 args.keypoint_seg_model_path = os.path.join(args.base_dir,"weights/panda/panda-3cam_azure/net.pth")
 args.urdf_file = os.path.join(args.base_dir,"urdfs/Panda/panda.urdf")

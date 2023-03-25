@@ -130,6 +130,8 @@ dmypy.json
 
 # model weights
 weights/
+outputs/
 
 # dev codes
-train.ipynb
+dev_*
+runs

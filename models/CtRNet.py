@@ -4,7 +4,7 @@ import kornia
 import numpy as np
 
 from .keypoint_seg_resnet import KeyPointSegNet
-from .BPnP import BPnP, BPnP_m3d
+from .BPnP import BPnP, BPnP_m3d, batch_project
 from .mesh_renderer import RobotMeshRenderer
 
 
@@ -32,10 +32,7 @@ class CtRNet(torch.nn.Module):
             print("Loading keypoint segmentation model from {}".format(args.keypoint_seg_model_path))
             self.keypoint_seg_predictor.load_state_dict(torch.load(args.keypoint_seg_model_path))
 
-        if args.evaluate == True:
-            self.keypoint_seg_predictor.eval()
-        else:
-            self.keypoint_seg_predictor.train()
+        self.keypoint_seg_predictor.eval()
 
         # load BPnP
         self.bpnp = BPnP.apply
@@ -46,6 +43,7 @@ class CtRNet(torch.nn.Module):
         self.intrinsics = np.array([[   args.fx,    0.     ,    args.px   ],
                                     [   0.     ,    args.fy,    args.py   ],
                                     [   0.     ,    0.     ,    1.        ]])
+        print("Camera intrinsics: {}".format(self.intrinsics))
         
         self.K = torch.tensor(self.intrinsics, device=self.device, dtype=torch.float)
 
@@ -57,6 +55,7 @@ class CtRNet(torch.nn.Module):
         elif args.robot_name == "Baxter_left_arm":
             from .robot_arm import BaxterLeftArm
             self.robot = BaxterLeftArm(args.urdf_file)
+        print("Robot model: {}".format(args.robot_name))
 
 
     def inference_single_image(self, img, joint_angles):
@@ -144,14 +143,57 @@ class CtRNet(torch.nn.Module):
             rendered_image = robot_renderer.silhouette_renderer(meshes_world=robot_mesh, R = -R, T = -T)
         else:
             rendered_image = robot_renderer.silhouette_renderer(meshes_world=robot_mesh, R = R, T = T)
+
+        if torch.isnan(rendered_image).any():
+            rendered_image = torch.nan_to_num(rendered_image)
+        
         return rendered_image[..., 3]
 
     
 
-    def train_on_batch(self, img, joint_angles, renderer):
+    def train_on_batch(self, img, joint_angles, robot_renderer, criterions, phase='train'):
         # img: (B, 3, H, W)
         # joint_angles: (B, 7)
-        pass
+        with torch.set_grad_enabled(phase == 'train'):
+            # detect 2d keypoints
+            points_2d, segmentation = self.keypoint_seg_predictor(img)
+
+            mask_list = list()
+            seg_weight_list = list()
+
+            for b in range(img.shape[0]):
+                # get 3d points
+                _,t_list = self.robot.get_joint_RT(joint_angles[b])
+                points_3d = torch.from_numpy(np.array(t_list)).float().to(self.device)
+                if self.args.robot_name == "Panda":
+                    points_3d = points_3d[:,[0,2,3,4,6,7,8]]
+
+                # get camera pose
+                cTr = self.bpnp(points_2d[b][None], points_3d, self.K)
+
+                # config robot mesh
+                robot_mesh = robot_renderer.get_robot_mesh(joint_angles[b])
+
+                # render robot mask
+                rendered_image = self.render_single_robot_mask(cTr.squeeze(), robot_mesh, robot_renderer)
+
+                mask_list.append(rendered_image)
+                points_2d_proj = batch_project(cTr, points_3d, self.K)
+                reproject_error = criterions["mse_mean"](points_2d[b], points_2d_proj.squeeze())
+                seg_weight = torch.exp(-reproject_error * self.args.reproj_err_scale)
+                seg_weight_list.append(seg_weight)
+
+            mask_batch = torch.cat(mask_list,0)
+
+            loss_bce = 0
+            for b in range(segmentation.shape[0]):
+                loss_bce = loss_bce + seg_weight_list[b] * criterions["bce"](segmentation[b].squeeze(), mask_batch[b].detach())
+
+            img_ref = torch.sigmoid(segmentation).detach()
+            #loss_reproj = 0.0005 * criterionMSE_mean(points_2d, points_2d_proj_batch)
+            loss_mse = 0.001 * criterions["mse_sum"](mask_batch, img_ref.squeeze())
+            loss = loss_mse + loss_bce 
+            return loss
 
 
 
