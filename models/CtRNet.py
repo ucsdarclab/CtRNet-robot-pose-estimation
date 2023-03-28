@@ -193,7 +193,8 @@ class CtRNet(torch.nn.Module):
             #loss_reproj = 0.0005 * criterionMSE_mean(points_2d, points_2d_proj_batch)
             loss_mse = 0.001 * criterions["mse_sum"](mask_batch, img_ref.squeeze())
             loss = loss_mse + loss_bce 
-            return loss
+            
+        return loss
 
 
 
