@@ -135,3 +135,6 @@ outputs/
 # dev codes
 dev_*
 runs
+
+# dataset
+data/
