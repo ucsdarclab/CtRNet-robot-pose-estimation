@@ -31,7 +31,3 @@ python ros_node/panda_pose.py
 ## Weights
 
 Weights for Panda and Baxter can be found [here](https://drive.google.com/file/d/1OAamxl3_cMLdlpksNo0p-8K20fSMukbI/view?usp=share_link).
-
-## Notes
-
-This repo is work-in-progress. Please stay tuned.
