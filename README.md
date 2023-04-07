@@ -31,3 +31,16 @@ python ros_node/panda_pose.py
 ## Weights
 
 Weights for Panda and Baxter can be found [here](https://drive.google.com/file/d/1OAamxl3_cMLdlpksNo0p-8K20fSMukbI/view?usp=share_link).
+
+
+## Videos
+Using CtRNet for visual servoing experiment with moving camera.
+
+
+
+https://user-images.githubusercontent.com/22925036/230662315-5ca62a10-e6b5-4eee-8abc-c3bf2b0fbaae.mp4
+
+
+
+https://user-images.githubusercontent.com/22925036/230662322-89b90a32-ca7b-4f64-a6ad-f9b807ddc08d.mp4
+
