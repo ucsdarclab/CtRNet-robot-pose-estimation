@@ -34,7 +34,7 @@ parser = argparse.ArgumentParser()
 
 args = parser.parse_args("")
 
-args.base_dir = "/home/workspace/src/ctrnet-robot-pose-estimation-ros/ros_nodes/"
+args.base_dir = "/home/workspace/src/ctrnet-robot-pose-estimation-ros/"
 args.use_gpu = True
 args.trained_on_multi_gpus = True
 args.keypoint_seg_model_path = os.path.join(args.base_dir,"weights/panda/panda-3cam_azure/net.pth")
