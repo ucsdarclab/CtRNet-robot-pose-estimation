@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import sys
 import os
 base_dir = os.path.abspath(".")
@@ -23,8 +22,6 @@ from models.CtRNet import CtRNet
 import cv2
 bridge = CvBridge()
 
-import transforms3d as t3d
-import tf2_ros
 #os.environ['ROS_MASTER_URI']='http://192.168.1.116:11311'
 #os.environ['ROS_IP']='192.168.1.186'
 
@@ -34,7 +31,7 @@ parser = argparse.ArgumentParser()
 
 args = parser.parse_args("")
 
-args.base_dir = "/home/workspace/src/ctrnet-robot-pose-estimation-ros/"
+args.base_dir = "/home/jingpei/Desktop/CtRNet-robot-pose-estimation"
 args.use_gpu = True
 args.trained_on_multi_gpus = True
 args.keypoint_seg_model_path = os.path.join(args.base_dir,"weights/panda/panda-3cam_azure/net.pth")
@@ -92,7 +89,7 @@ def gotData(img_msg, joint_msg):
             image = image.cuda()
 
         cTr, points_2d, segmentation = CtRNet.inference_single_image(image, joint_angles)
-        #cTb = CtRNet.bpnp(CtRNet.points_2d_pred, CtRNet.points_3d, CtRNet.K).detach().cpu()
+
         print(cTr)
         qua = kornia.geometry.conversions.angle_axis_to_quaternion(cTr[:,:3]).detach().cpu().numpy().squeeze() # xyzw
         #print(qua)
@@ -109,30 +106,7 @@ def gotData(img_msg, joint_msg):
         #print(p)
         pose_pub.publish(p)
 
-        # Rotating to ROS format
-        cvTr= np.eye(4)
-        cvTr[:3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3]).detach().cpu().numpy().squeeze()
-        cvTr[:3, 3] = np.array(cTr[:, 3:].detach().cpu())
-
-        # ROS camera to CV camera transform
-        cTcv = np.array([[0, 0 , 1, 0], [-1, 0, 0 , 0], [0, -1, 0, 0], [0, 0, 0, 1]])
-        T = cTcv@cvTr
-        qua = t3d.quaternions.mat2quat(T[:3, :3]) # wxyz
-        # Publish Transform
-        br = tf2_ros.TransformBroadcaster()
-        t = geometry_msgs.msg.TransformStamped()
-        t.header.stamp = rospy.Time.now()
-        t.header.frame_id = "camera_base"
-        t.child_frame_id = "panda_link0"
-        t.transform.translation.x = T[0, 3]
-        t.transform.translation.y = T[1, 3]
-        t.transform.translation.z = T[2, 3]
-        t.transform.rotation.x = qua[1]
-        t.transform.rotation.y = qua[2]
-        t.transform.rotation.z = qua[3]
-        t.transform.rotation.w = qua[0]
-        br.sendTransform(t)
-
+        
         #### visualization code ####
         #points_2d = points_2d.detach().cpu().numpy()
         #img_np = to_numpy_img(image)
