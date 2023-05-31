@@ -79,10 +79,12 @@ def preprocess_img(cv_img,args):
 #start = time.time()
 point_samples = []
 rotation_samples = []
+prev_confidence = []
 def gotData(img_msg, joint_msg):
     #global start
     global point_samples
     global rotation_samples
+    global prev_confidence
     # print("Received data!")
     try:
         # Convert your ROS Image message to OpenCV2
@@ -95,7 +97,7 @@ def gotData(img_msg, joint_msg):
         if args.use_gpu:
             image = image.cuda()
 
-        cTr, points_2d, segmentation = CtRNet.inference_single_image(image, joint_angles)
+        cTr, points_2d, segmentation, confidence = CtRNet.inference_single_image(image, joint_angles)
         # print(cTr)
         # update_publisher(cTr, img_msg)
         qua = kornia.geometry.conversions.angle_axis_to_quaternion(cTr[:,:3]).detach().cpu() # xyzw
@@ -103,20 +105,31 @@ def gotData(img_msg, joint_msg):
         # print(cTr.shape)
         # print(T.shape)
         # print(qua.shape)
-        filtering_method = "mod_z_score"
-
+        filtering_method = "z_score"
+        joint_confident_thresh = 3
+        num_joint_confident = torch.sum(torch.gt(confidence, 0.90))
         if filtering_method == "none":
             update_publisher(cTr, img_msg, qua.numpy().squeeze(), T.numpy().squeeze())
+            return
+
+        # avg_confidence = torch.mean(confidence)
+        # print(avg_confidence)
+        if num_joint_confident < joint_confident_thresh:
+            print(f"Only confident with {num_joint_confident} joints, skipping...")
             return
 
         if len(point_samples) < 30:
             print(f"Number of samples: {len(point_samples)}")
             point_samples.append(T)
             rotation_samples.append(qua)
+            prev_confidence = confidence
             return
+        
+        # confidence_diff = prev_confidence - confidence
+        # print(confidence_diff)
 
         is_not_outlier = None
-        thresh = 2
+        thresh = 1.5
         if filtering_method == "z_score":
             is_not_outlier, max_pos_z, max_rot_z = z_score(T, qua, thresh)
         elif filtering_method == "mod_z_score":
@@ -135,7 +148,7 @@ def gotData(img_msg, joint_msg):
             update_publisher(cTr, img_msg, qua.numpy().squeeze(), T.numpy().squeeze())
         elif keep_outlier:
             print("Skipped but kept outlier")
-            print(keep_outlier_prob)
+            # print(keep_outlier_prob)
             point_samples.append(T)
             rotation_samples.append(qua)
         else:
@@ -173,6 +186,7 @@ def median_abs_deviation(data):
     data_mean_repeated = data_mean.unsqueeze(0).repeat(data_stack.shape[0],1)
     mad = torch.median(torch.abs(data_stack - data_mean_repeated))
     return mad
+
 def mod_z_score(T, qua, thresh):
     point_mean = torch.mean(torch.stack(point_samples), dim=0)
     point_mad = median_abs_deviation(point_samples)
