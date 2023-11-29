@@ -80,11 +80,13 @@ def preprocess_img(cv_img,args):
 point_samples = []
 rotation_samples = []
 prev_confidence = []
+T_minus_one = None
 def gotData(img_msg, joint_msg):
     #global start
     global point_samples
     global rotation_samples
     global prev_confidence
+    global T_minus_one
     # print("Received data!")
     try:
         # Convert your ROS Image message to OpenCV2
@@ -102,16 +104,25 @@ def gotData(img_msg, joint_msg):
         # update_publisher(cTr, img_msg)
         qua = kornia.geometry.conversions.angle_axis_to_quaternion(cTr[:,:3]).detach().cpu() # xyzw
         T = cTr[:,3:].detach().cpu()
+        print(T)
         # print(cTr.shape)
         # print(T.shape)
         # print(qua.shape)
-        filtering_method = "z_score"
+        filtering_method = "particle"
         joint_confident_thresh = 3
         num_joint_confident = torch.sum(torch.gt(confidence, 0.90))
         if filtering_method == "none":
             update_publisher(cTr, img_msg, qua.numpy().squeeze(), T.numpy().squeeze())
             return
+        elif filtering_method == "particle":
+            if T_minus_one is not None:
+                particle_filter(cTr, T_minus_one, joint_angles, 1.0, 25)
+            else:
+                print(f"Skipping because t-1 is {T_minus_one}")
+            T_minus_one = T
+            update_publisher(cTr, img_msg, qua.numpy().squeeze(), T.numpy().squeeze())
 
+            return
         # avg_confidence = torch.mean(confidence)
         # print(avg_confidence)
         if num_joint_confident < joint_confident_thresh:
@@ -149,6 +160,8 @@ def gotData(img_msg, joint_msg):
         elif keep_outlier:
             print("Skipped but kept outlier")
             # print(keep_outlier_prob)
+            point_samples.pop(0)
+            rotation_samples.pop(0)
             point_samples.append(T)
             rotation_samples.append(qua)
         else:
@@ -164,7 +177,56 @@ def gotData(img_msg, joint_msg):
 
     except CvBridgeError as e:
         print(e)
+def particle_filter(cTr, T_minus_one, joint_angles, sigma, m):
+    print("--------------------------------------")
+    print("Particle filter")
+    normal = torch.distributions.normal.Normal(torch.tensor([0.0]), torch.tensor([sigma]))
+    omega = normal.sample((m, T_minus_one.shape[1])).squeeze()
+    # print(T_minus_one)
+    # print(omega)
+    # print(T.repeat(m,1))
 
+    # m x 3 tensor of particles
+    particles = T_minus_one.repeat(m,1) + omega
+    # print(CtRNet.intrinsics)
+    # print(particles[1, :].numpy())
+    # print(f"joint_angles: {joint_angles}")
+    _,t_list = CtRNet.robot.get_joint_RT(joint_angles)
+    points_3d = torch.from_numpy(np.array(t_list)).float()
+    # print(points_3d)
+    # if self.args.robot_name == "Panda":
+    #     points_3d = points_3d[[0,2,3,4,6,7,8]] # remove 1 and 5 links as they are overlapping with 2 and 6
+    #     # Rotating to ROS format
+    p_t = torch.vstack((points_3d.T, torch.ones((1, points_3d.shape[0]))))
+    cvTr= np.eye(4)
+    cvTr[:3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3]).detach().cpu().numpy().squeeze()
+    cvTr[:3, 3] = particles[1,:]
+    cvTr_pt = torch.from_numpy(cvTr).float() @ p_t
+    K = torch.from_numpy(CtRNet.intrinsics).float()
+    K_cvtr_pt = K @ cvTr_pt[:3, :]
+    z_t_hat = (1/torch.pi) * K_cvtr_pt
+    print(z_t_hat.shape)
+    # print(cvTr @ points_3d)
+    # print((torch.from_numpy(CtRNet.intrinsics).float() @ (particles[1, :] @ points_3d)))
+
+    # print((1/torch.pi) * (torch.from_numpy(CtRNet.intrinsics).float() @ particles[1, :]))
+
+    print("--------------------------------------")
+
+    
+
+    # # ROS camera to CV camera transform
+    # cTcv = np.array([[0, 0 , 1, 0], [-1, 0, 0 , 0], [0, -1, 0, 0], [0, 0, 0, 1]])
+    # print(cTcv)
+    # T = cTcv@cvTr
+    # print(T)
+    # qua = t3d.quaternions.mat2quat(T[:3, :3]) # wxyz
+    
+    # from robot_arm import PandaArm
+    # self.robot = PandaArm(args.urdf_file)
+    # self.robot.fkine()
+
+    return
 def z_score(T, qua, thresh):
     point_mean = torch.mean(torch.stack(point_samples), dim=0)
     point_std = torch.std(torch.stack(point_samples), dim=0)
@@ -216,6 +278,7 @@ def update_publisher(cTr, img_msg, qua, T):
     #print(p)
     pose_pub.publish(p)
 
+    # TODO: Not using the filtered output!
     # Rotating to ROS format
     cvTr= np.eye(4)
     cvTr[:3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3]).detach().cpu().numpy().squeeze()

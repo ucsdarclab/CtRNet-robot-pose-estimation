@@ -101,7 +101,7 @@ class SpatialSoftArgmax(nn.Module):
         # print(f"top 15: {torch.topk(softmax, 15).values.sum(dim=1)}")
         # print(f"top 20: {torch.topk(softmax, 20).values.sum(dim=1)}")
         # print(f"top 30: {torch.topk(softmax, 30).values.sum(dim=1)}")
-        print(f"top 40: {torch.topk(softmax, 40).values.sum(dim=1)}")
+        # print(f"top 40: {torch.topk(softmax, 40).values.sum(dim=1)}")
         
         confidence = torch.topk(softmax, 40).values.sum(dim=1)
         # closest_indices = torch.topk(torch.abs(xc.flatten() - x_mean), 40, dim=1, largest=False).indices
