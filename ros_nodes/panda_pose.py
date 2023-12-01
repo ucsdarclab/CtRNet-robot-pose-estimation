@@ -117,7 +117,7 @@ def gotData(img_msg, joint_msg):
             return
         elif filtering_method == "particle":
             if T_minus_one is not None:
-                pred_T = particle_filter(cTr, T_minus_one, T, joint_angles, 0.01, 1000)
+                pred_T = particle_filter(cTr, T_minus_one, T, joint_angles, 0.05, 3000)
                 # print(T)
                 # print(pred_T)
                 update_publisher(cTr, img_msg, qua.numpy().squeeze(), pred_T.numpy().squeeze())
@@ -181,7 +181,7 @@ def gotData(img_msg, joint_msg):
         print(e)
 def particle_filter(cTr, T_minus_one, T, joint_angles, sigma, m):
     # print("--------------------------------------")
-    print("Particle filter")
+    # print("Particle filter")
 
     # Step 1
     normal = torch.distributions.normal.Normal(torch.tensor([0.0]), torch.tensor([sigma]))
@@ -205,16 +205,13 @@ def particle_filter(cTr, T_minus_one, T, joint_angles, sigma, m):
     #     # Rotating to ROS format
     p_t = torch.vstack((points_3d.T, torch.ones((1, points_3d.shape[0]))))
     
-    ctr_particle_batch = []
+    cvTr = torch.eye(4)
+    cvTr[:3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3])
+    cvTr = cvTr.unsqueeze(0).repeat(m, 1, 1)
+    # print(particles)
+    cvTr[:, :3, 3] = particles
 
-    for i in range(m):
-        # print(f"adding {i} particle")
-        cvTr = np.eye(4)
-        cvTr[:3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3]).detach().cpu().numpy().squeeze()
-        cvTr[:3, 3] = particles[i,:]
-        ctr_particle_batch.append(cvTr)
-    ctr_particle_batch = np.array(ctr_particle_batch)
-    cvTr_pt = torch.from_numpy(ctr_particle_batch).float() @ p_t
+    cvTr_pt = cvTr.float() @ p_t
     # print(cvTr_pt.shape)
     K = torch.from_numpy(CtRNet.intrinsics).float()
     K_cvtr_pt = K @ cvTr_pt[:, :3, :]
@@ -224,10 +221,10 @@ def particle_filter(cTr, T_minus_one, T, joint_angles, sigma, m):
 
     # print((1/torch.pi) * (torch.from_numpy(CtRNet.intrinsics).float() @ particles[1, :]))
     # Step 3
-    cvTr_gt = np.eye(4)
-    cvTr_gt[:3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3]).detach().cpu().numpy().squeeze()
+    cvTr_gt = torch.eye(4)
+    cvTr_gt[:3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3])
     cvTr_gt[:3, 3] = T
-    cvTr_gt_pt = torch.from_numpy(cvTr_gt).float() @ p_t
+    cvTr_gt_pt = cvTr_gt.float() @ p_t
     K_cvtr_gt_pt = K @ cvTr_gt_pt[:3, :]
     z_t = (1/torch.pi) * K_cvtr_gt_pt
     z_t = z_t[:2, :].reshape(1, -1)
@@ -236,10 +233,10 @@ def particle_filter(cTr, T_minus_one, T, joint_angles, sigma, m):
     z_t_hats = z_t_hats.reshape(m, -1)
     # print(z_t_hats)
     # print(z_t)
-    w = rbf_kernel(z_t_hats, Y=z_t)
-    # print(w.shape)
+    w = rbf_kernel(z_t_hats.detach().numpy(), Y=z_t.detach().numpy())
+    # print(w)
     # print(ctr_particle_batch.shape)
-    w_ctr = w[:, :, None] * ctr_particle_batch
+    w_ctr = w[:, :, None] * cvTr.detach().numpy()
     sum_w_ctr = torch.sum(torch.from_numpy(w_ctr), 0)
     sum_w = torch.sum(torch.from_numpy(w))
     pred_ctr = sum_w_ctr / sum_w
