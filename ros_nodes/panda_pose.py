@@ -105,7 +105,7 @@ def gotData(img_msg, joint_msg):
         # update_publisher(cTr, img_msg)
         qua = kornia.geometry.conversions.angle_axis_to_quaternion(cTr[:,:3]).detach().cpu() # xyzw
         T = cTr[:,3:].detach().cpu()
-        print(T)
+        # print(T)
         # print(cTr.shape)
         # print(T.shape)
         # print(qua.shape)
@@ -117,12 +117,13 @@ def gotData(img_msg, joint_msg):
             return
         elif filtering_method == "particle":
             if T_minus_one is not None:
-                particle_filter(cTr, T_minus_one, T, joint_angles, 0.05, 25)
+                pred_T = particle_filter(cTr, T_minus_one, T, joint_angles, 0.01, 1000)
+                # print(T)
+                # print(pred_T)
+                update_publisher(cTr, img_msg, qua.numpy().squeeze(), pred_T.numpy().squeeze())
             else:
                 print(f"Skipping because t-1 is {T_minus_one}")
             T_minus_one = T
-            update_publisher(cTr, img_msg, qua.numpy().squeeze(), T.numpy().squeeze())
-
             return
         # avg_confidence = torch.mean(confidence)
         # print(avg_confidence)
@@ -179,7 +180,7 @@ def gotData(img_msg, joint_msg):
     except CvBridgeError as e:
         print(e)
 def particle_filter(cTr, T_minus_one, T, joint_angles, sigma, m):
-    print("--------------------------------------")
+    # print("--------------------------------------")
     print("Particle filter")
 
     # Step 1
@@ -203,13 +204,21 @@ def particle_filter(cTr, T_minus_one, T, joint_angles, sigma, m):
     #     points_3d = points_3d[[0,2,3,4,6,7,8]] # remove 1 and 5 links as they are overlapping with 2 and 6
     #     # Rotating to ROS format
     p_t = torch.vstack((points_3d.T, torch.ones((1, points_3d.shape[0]))))
-    cvTr= np.eye(4)
-    cvTr[:3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3]).detach().cpu().numpy().squeeze()
-    cvTr[:3, 3] = particles[1,:]
-    cvTr_pt = torch.from_numpy(cvTr).float() @ p_t
+    
+    ctr_particle_batch = []
+
+    for i in range(m):
+        # print(f"adding {i} particle")
+        cvTr = np.eye(4)
+        cvTr[:3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3]).detach().cpu().numpy().squeeze()
+        cvTr[:3, 3] = particles[i,:]
+        ctr_particle_batch.append(cvTr)
+    ctr_particle_batch = np.array(ctr_particle_batch)
+    cvTr_pt = torch.from_numpy(ctr_particle_batch).float() @ p_t
+    # print(cvTr_pt.shape)
     K = torch.from_numpy(CtRNet.intrinsics).float()
-    K_cvtr_pt = K @ cvTr_pt[:3, :]
-    z_t_hat = (1/torch.pi) * K_cvtr_pt
+    K_cvtr_pt = K @ cvTr_pt[:, :3, :]
+    z_t_hats = (1/torch.pi) * K_cvtr_pt
     # print(cvTr @ points_3d)
     # print((torch.from_numpy(CtRNet.intrinsics).float() @ (particles[1, :] @ points_3d)))
 
@@ -221,15 +230,24 @@ def particle_filter(cTr, T_minus_one, T, joint_angles, sigma, m):
     cvTr_gt_pt = torch.from_numpy(cvTr_gt).float() @ p_t
     K_cvtr_gt_pt = K @ cvTr_gt_pt[:3, :]
     z_t = (1/torch.pi) * K_cvtr_gt_pt
-    z_t = z_t[:2, :]
-    z_t_hat = z_t_hat[:2, :]
-    # print(z_t_hat)
-    # print(z_t)
-    w_i = rbf_kernel(z_t_hat.reshape(1,-1), Y=z_t.reshape(1,-1))
-    print(w_i)
+    z_t = z_t[:2, :].reshape(1, -1)
 
-    print(particles[1,:].shape)
-    print("--------------------------------------")
+    z_t_hats = z_t_hats[:, :2, :]
+    z_t_hats = z_t_hats.reshape(m, -1)
+    # print(z_t_hats)
+    # print(z_t)
+    w = rbf_kernel(z_t_hats, Y=z_t)
+    # print(w.shape)
+    # print(ctr_particle_batch.shape)
+    w_ctr = w[:, :, None] * ctr_particle_batch
+    sum_w_ctr = torch.sum(torch.from_numpy(w_ctr), 0)
+    sum_w = torch.sum(torch.from_numpy(w))
+    pred_ctr = sum_w_ctr / sum_w
+    # print("--------------------------------------")
+    # print(pred_ctr)
+    # print(cvTr_gt)
+    pred_pos = pred_ctr[:3, 3:].T
+    return pred_pos
 
     
 
@@ -243,7 +261,6 @@ def particle_filter(cTr, T_minus_one, T, joint_angles, sigma, m):
     # from robot_arm import PandaArm
     # self.robot = PandaArm(args.urdf_file)
     # self.robot.fkine()
-    return
 
 def z_score(T, qua, thresh):
     point_mean = torch.mean(torch.stack(point_samples), dim=0)
