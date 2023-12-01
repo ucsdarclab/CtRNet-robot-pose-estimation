@@ -25,6 +25,7 @@ bridge = CvBridge()
 
 import transforms3d as t3d
 import tf2_ros
+from sklearn.metrics.pairwise import rbf_kernel
 #os.environ['ROS_MASTER_URI']='http://192.168.1.116:11311'
 #os.environ['ROS_IP']='192.168.1.186'
 
@@ -116,7 +117,7 @@ def gotData(img_msg, joint_msg):
             return
         elif filtering_method == "particle":
             if T_minus_one is not None:
-                particle_filter(cTr, T_minus_one, joint_angles, 1.0, 25)
+                particle_filter(cTr, T_minus_one, T, joint_angles, 0.05, 25)
             else:
                 print(f"Skipping because t-1 is {T_minus_one}")
             T_minus_one = T
@@ -177,9 +178,11 @@ def gotData(img_msg, joint_msg):
 
     except CvBridgeError as e:
         print(e)
-def particle_filter(cTr, T_minus_one, joint_angles, sigma, m):
+def particle_filter(cTr, T_minus_one, T, joint_angles, sigma, m):
     print("--------------------------------------")
     print("Particle filter")
+
+    # Step 1
     normal = torch.distributions.normal.Normal(torch.tensor([0.0]), torch.tensor([sigma]))
     omega = normal.sample((m, T_minus_one.shape[1])).squeeze()
     # print(T_minus_one)
@@ -188,6 +191,8 @@ def particle_filter(cTr, T_minus_one, joint_angles, sigma, m):
 
     # m x 3 tensor of particles
     particles = T_minus_one.repeat(m,1) + omega
+
+    # Step 2
     # print(CtRNet.intrinsics)
     # print(particles[1, :].numpy())
     # print(f"joint_angles: {joint_angles}")
@@ -205,12 +210,25 @@ def particle_filter(cTr, T_minus_one, joint_angles, sigma, m):
     K = torch.from_numpy(CtRNet.intrinsics).float()
     K_cvtr_pt = K @ cvTr_pt[:3, :]
     z_t_hat = (1/torch.pi) * K_cvtr_pt
-    print(z_t_hat.shape)
     # print(cvTr @ points_3d)
     # print((torch.from_numpy(CtRNet.intrinsics).float() @ (particles[1, :] @ points_3d)))
 
     # print((1/torch.pi) * (torch.from_numpy(CtRNet.intrinsics).float() @ particles[1, :]))
+    # Step 3
+    cvTr_gt = np.eye(4)
+    cvTr_gt[:3, :3] = kornia.geometry.conversions.angle_axis_to_rotation_matrix(cTr[:, :3]).detach().cpu().numpy().squeeze()
+    cvTr_gt[:3, 3] = T
+    cvTr_gt_pt = torch.from_numpy(cvTr_gt).float() @ p_t
+    K_cvtr_gt_pt = K @ cvTr_gt_pt[:3, :]
+    z_t = (1/torch.pi) * K_cvtr_gt_pt
+    z_t = z_t[:2, :]
+    z_t_hat = z_t_hat[:2, :]
+    # print(z_t_hat)
+    # print(z_t)
+    w_i = rbf_kernel(z_t_hat.reshape(1,-1), Y=z_t.reshape(1,-1))
+    print(w_i)
 
+    print(particles[1,:].shape)
     print("--------------------------------------")
 
     
@@ -225,8 +243,8 @@ def particle_filter(cTr, T_minus_one, joint_angles, sigma, m):
     # from robot_arm import PandaArm
     # self.robot = PandaArm(args.urdf_file)
     # self.robot.fkine()
-
     return
+
 def z_score(T, qua, thresh):
     point_mean = torch.mean(torch.stack(point_samples), dim=0)
     point_std = torch.std(torch.stack(point_samples), dim=0)
