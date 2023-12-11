@@ -114,7 +114,7 @@ def gotData(img_msg, joint_msg):
             return
         elif filtering_method == "particle":
             if cTr_minus_one is not None:
-                pred_cTr = particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, 0.01, 2000)
+                pred_cTr = particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, 0.05, 3000)
                 cTr_minus_one = pred_cTr
                 pred_qua = kornia.geometry.conversions.angle_axis_to_quaternion(pred_cTr[:,:3]).detach().cpu() # xyzw
                 pred_T = pred_cTr[:,3:].detach().cpu()
@@ -209,14 +209,23 @@ def particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, sigma, m):
     w = rbf_kernel(z_t_hats, Y=z_t.cpu().detach().numpy())
 
     # weighted normalized ctr
-    # w_ctr = w[:, :, None] * cvTr.detach().numpy()
-    # sum_w_ctr = torch.sum(torch.from_numpy(w_ctr), 0)
+    # cvTr = torch.eye(4).repeat(m, 1, 1)
+    # cvTr[:, :3, :3] = particles_r
+    # cvTr[:, :3, 3] = particles_t
+    # w_cvTr = w[:, :, None] * cvTr.detach().numpy()
+    # sum_w_cvTr = torch.sum(torch.from_numpy(w_cvTr), 0)
     # sum_w = torch.sum(torch.from_numpy(w))
-    # pred_ctr = sum_w_ctr / sum_w
+    # norm_sum_cvTr = sum_w_cvTr / sum_w
+    # rvec = norm_sum_cvTr[:3, :3].contiguous()
+    # tvec = norm_sum_cvTr[:3, 3]
+    # pred_cTr = torch.zeros((1,6))
+    # pred_cTr[0, :3] = kornia.geometry.conversions.rotation_matrix_to_angle_axis(rvec)
+    # pred_cTr[0, 3:] = tvec
 
     # max weighted ctr
     max_w_idx = np.argmax(w)
     pred_cTr = torch.zeros((1, 6))
+    print(particles_r[max_w_idx, : ,:])
     pred_cTr[0, :3] = kornia.geometry.conversions.rotation_matrix_to_angle_axis(particles_r[max_w_idx, :, :])
     pred_cTr[0, 3:] = particles_t[max_w_idx, :]
 
