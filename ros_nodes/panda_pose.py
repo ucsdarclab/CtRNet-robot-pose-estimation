@@ -12,9 +12,12 @@ from message_filters import ApproximateTimeSynchronizer, Subscriber
 import sensor_msgs
 import geometry_msgs
 import kornia
+import shutil
 
 import torch
 import torchvision.transforms as transforms
+from multiprocessing.pool import Pool
+from itertools import repeat
 
 from PIL import Image as PILImage
 from utils import *
@@ -76,7 +79,8 @@ def preprocess_img(cv_img,args):
     image = trans_to_tensor(image_pil)
     return image
 
-
+shutil.rmtree("./visuals")
+os.mkdir("./visuals")
 #############################################################################3
 
 #start = time.time()
@@ -84,12 +88,15 @@ point_samples = []
 rotation_samples = []
 prev_confidence = []
 cTr_minus_one = None
+visual_idx = 0
 def gotData(img_msg, joint_msg):
     #global start
     global point_samples
     global rotation_samples
     global prev_confidence
     global cTr_minus_one
+    global points_2d_minus_one
+    
     # print("Received data!")
     try:
         # Convert your ROS Image message to OpenCV2
@@ -116,14 +123,16 @@ def gotData(img_msg, joint_msg):
             return
         elif filtering_method == "particle":
             if cTr_minus_one is not None:
-                pred_cTr = particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, 0.05, 1500)
+                pred_cTr = particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, 0.02, 20, 1, image)
                 cTr_minus_one = pred_cTr
+                points_2d_minus_one = points_2d
                 pred_qua = kornia.geometry.conversions.angle_axis_to_quaternion(pred_cTr[:,:3]).detach().cpu() # xyzw
                 pred_T = pred_cTr[:,3:].detach().cpu()
                 update_publisher(cTr, img_msg, pred_qua.numpy().squeeze(), pred_T.numpy().squeeze())
             else:
                 print(f"Skipping because t-1 is {cTr_minus_one}")
                 cTr_minus_one = cTr
+                points_2d_minus_one = points_2d
             return
         # avg_confidence = torch.mean(confidence)
         # print(avg_confidence)
@@ -179,15 +188,56 @@ def gotData(img_msg, joint_msg):
 
     except CvBridgeError as e:
         print(e)
+def visualize_panda(particles, joint_angles, cTr, image, points_2d, max_w_idx, points_2d_minus_one):
+    global visual_idx
+    base_dir = "/home/workspace/src/ctrnet-robot-pose-estimation-ros"
+    mesh_files = [base_dir + "/urdfs/Panda/meshes/visual/link0/link0.obj",
+              base_dir + "/urdfs/Panda/meshes/visual/link1/link1.obj",
+              base_dir + "/urdfs/Panda/meshes/visual/link2/link2.obj",
+              base_dir + "/urdfs/Panda/meshes/visual/link3/link3.obj",
+              base_dir + "/urdfs/Panda/meshes/visual/link4/link4.obj",
+              base_dir + "/urdfs/Panda/meshes/visual/link5/link5.obj",
+              base_dir + "/urdfs/Panda/meshes/visual/link6/link6.obj",
+              base_dir + "/urdfs/Panda/meshes/visual/link7/link7.obj",
+              base_dir + "/urdfs/Panda/meshes/visual/hand/hand.obj",
+             ]
+    robot_renderer = CtRNet.setup_robot_renderer(mesh_files)
+    robot_mesh = robot_renderer.get_robot_mesh(joint_angles)
+    rendered_image = CtRNet.render_single_robot_mask(cTr.squeeze().detach().cuda(), robot_mesh, robot_renderer)
+    img_np = to_numpy_img(image)
+    img_np = 0.0* np.ones(img_np.shape) + img_np * 0.6
+    
+    for particle in particles:
+        img_np = overwrite_image(img_np, particle, color=(0,0,1), point_size=1)
+    # print("hi ", max_w_idx)
+    # print("bye ", particles[max_w_idx, :, :])
+    img_np = overwrite_image(img_np, particles[max_w_idx, :, :], color=(1,0,0), point_size=1)
+    img_np = overwrite_image(img_np,points_2d.detach().cpu().numpy().squeeze().astype(int), color=(0,1,0), point_size=3)
+    img_np = overwrite_image(img_np, points_2d_minus_one.detach().cpu().numpy().squeeze().astype(int), color=(1,1,0), point_size=3)
 
-def particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, sigma, m, steps=3):
+    plt.figure(figsize=(15,5))
+    # plt.subplot(1,3,1)
+    plt.title("keypoints")
+    plt.imshow(img_np)
+    # plt.subplot(1,3,2)
+    # plt.title("segmentation")
+    # plt.imshow(segmentation.squeeze().detach().cpu().numpy())
+    # plt.subplot(1,3,2)
+    # plt.title("rendering")
+    # plt.imshow(rendered_image.squeeze().detach().cpu().numpy())
+
+    plt.savefig(f"./visuals/result{visual_idx}.png", dpi=800, format="png")
+    visual_idx += 1
+    input("Type Enter to continue")
+
+def particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, sigma, m, steps, image):
     # print("--------------------------------------")
     print("Particle filter")
     particles_r = None
     particles_t = None
     pred_cTr = torch.zeros((1, 6))
     for i in range(steps):
-        print(f"resample step {i}")
+        # print(f"resample step {i}")
         normal = torch.distributions.normal.Normal(torch.tensor([0.0]), torch.tensor([sigma]))
         omega_r = normal.sample((m, 3, 3)).squeeze()
         omega_t = normal.sample((m, 3)).squeeze()
@@ -208,26 +258,35 @@ def particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, sigma, m, steps
         _, t_list = CtRNet.robot.get_joint_RT(joint_angles)
         points_3d = torch.from_numpy(np.array(t_list)).float()
         p_t = points_3d[[0,2,3,4,6,7,8]] # remove 1 and 5 links as they are overlapping with 2 and 6
-        K = CtRNet.intrinsics
+        K = torch.from_numpy(CtRNet.intrinsics)
         z_t_hats = []
 
-        for i in range(m):
-            z_t_hat, _ = cv2.projectPoints(p_t.numpy(), np.float64(particles_r[i, :, :].cpu().detach().numpy()), np.float64(particles_t[i, :].cpu().detach().numpy()), K, None)
+        # p = Pool(processes=3)
+        # args = zip(p_t.repeat(m,1,1).numpy(), np.float64(particles_r.cpu().detach().numpy()), np.float64(particles_t.cpu().detach().numpy()), K.repeat(m,1,1).numpy(), repeat(None))
+        # results = p.starmap(cv2.projectPoints, args)
+        # p.close()
+        # p.join()
+        # print(results)
+         #z_t_hats = [z_t_hat for (z_t_hat, _) in results]
+        # z_t_hats = list(list(zip(*results))[0]) 
+        for j in range(m): 
+            z_t_hat, _ = cv2.projectPoints(p_t.numpy(), np.float64(particles_r[j, :, :].cpu().detach().numpy()), np.float64(particles_t[j, :].cpu().detach().numpy()), K.numpy(), None)
             z_t_hats.append(z_t_hat)
 
         # Step 3
         z_t = points_2d.reshape(1, 14)
-        z_t_hats = np.array(z_t_hats).squeeze(2)
-        z_t_hats = z_t_hats.reshape(m, -1)
-        w = rbf_kernel(z_t_hats, Y=z_t.cpu().detach().numpy()) + 1.e-5 #avoid zeros
-
+        z_t_hats_points = np.array(z_t_hats).squeeze(2)
+        z_t_hats = z_t_hats_points.reshape(m, -1)
+        w = rbf_kernel(z_t_hats, Y=z_t.cpu().detach().numpy()) #avoid zeros
+        
         # resampling
-        w_norm = w.squeeze() / np.sum(w.squeeze())
-        resample_idxs = systematic_resample(w_norm)
-        particles_r[:] = particles_r[resample_idxs]
-        particles_t[:] = particles_t[resample_idxs]
+        # w_norm = w.squeeze() / np.sum(w.squeeze())
+        # resample_idxs = systematic_resample(w_norm)
+        # resample_idxs = stratified_resample(w_norm)
+        # particles_r[:] = particles_r[resample_idxs]
+        # particles_t[:] = particles_t[resample_idxs]
 
-        if i == steps-1:
+        # if i == steps-1:
             # weighted normalized ctr
             # cvTr = torch.eye(4).repeat(m, 1, 1)
             # cvTr[:, :3, :3] = particles_r
@@ -243,12 +302,13 @@ def particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, sigma, m, steps
             # pred_cTr[0, 3:] = tvec
 
             # max weighted ctr
-            max_w_idx = np.argmax(w)
-            pred_cTr = torch.zeros((1, 6))
-            print(particles_r[max_w_idx, : ,:])
-            pred_cTr[0, :3] = kornia.geometry.conversions.rotation_matrix_to_angle_axis(particles_r[max_w_idx, :, :])
-            pred_cTr[0, 3:] = particles_t[max_w_idx, :]
-
+        max_w_idx = np.argmax(w)
+        pred_cTr = torch.zeros((1, 6))
+            # print(particles_r[max_w_idx, : ,:])
+        pred_cTr[0, :3] = kornia.geometry.conversions.rotation_matrix_to_angle_axis(particles_r[max_w_idx, :, :])
+        pred_cTr[0, 3:] = particles_t[max_w_idx, :]
+            
+        visualize_panda(z_t_hats_points, joint_angles, cTr_minus_one, image, points_2d, max_w_idx, points_2d_minus_one)
 
     return pred_cTr.detach()
 
