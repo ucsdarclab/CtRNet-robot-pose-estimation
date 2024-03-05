@@ -31,6 +31,8 @@ import tf2_ros
 from sklearn.metrics.pairwise import rbf_kernel
 from filterpy.monte_carlo import systematic_resample
 from filterpy.monte_carlo import stratified_resample
+
+import matplotlib.patches as mpatches
 #os.environ['ROS_MASTER_URI']='http://192.168.1.116:11311'
 #os.environ['ROS_IP']='192.168.1.186'
 
@@ -79,8 +81,8 @@ def preprocess_img(cv_img,args):
     image = trans_to_tensor(image_pil)
     return image
 
-shutil.rmtree("./visuals")
-os.mkdir("./visuals")
+shutil.rmtree("/home/workspace/src/ctrnet-robot-pose-estimation-ros/ros_nodes/visuals")
+os.mkdir("/home/workspace/src/ctrnet-robot-pose-estimation-ros/ros_nodes/visuals")
 #############################################################################3
 
 #start = time.time()
@@ -119,11 +121,12 @@ def gotData(img_msg, joint_msg):
         joint_confident_thresh = 3
         num_joint_confident = torch.sum(torch.gt(confidence, 0.90))
         if filtering_method == "none":
+            # input("Press Enter to continue")
             update_publisher(cTr, img_msg, qua.numpy().squeeze(), T.numpy().squeeze())
             return
         elif filtering_method == "particle":
             if cTr_minus_one is not None:
-                pred_cTr = particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, 0.02, 20, 1, image)
+                pred_cTr = particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, 0.02, 3000, 3, image)
                 cTr_minus_one = pred_cTr
                 points_2d_minus_one = points_2d
                 pred_qua = kornia.geometry.conversions.angle_axis_to_quaternion(pred_cTr[:,:3]).detach().cpu() # xyzw
@@ -206,14 +209,14 @@ def visualize_panda(particles, joint_angles, cTr, image, points_2d, max_w_idx, p
     rendered_image = CtRNet.render_single_robot_mask(cTr.squeeze().detach().cuda(), robot_mesh, robot_renderer)
     img_np = to_numpy_img(image)
     img_np = 0.0* np.ones(img_np.shape) + img_np * 0.6
-    
-    for particle in particles:
-        img_np = overwrite_image(img_np, particle, color=(0,0,1), point_size=1)
-    # print("hi ", max_w_idx)
-    # print("bye ", particles[max_w_idx, :, :])
-    img_np = overwrite_image(img_np, particles[max_w_idx, :, :], color=(1,0,0), point_size=1)
-    img_np = overwrite_image(img_np,points_2d.detach().cpu().numpy().squeeze().astype(int), color=(0,1,0), point_size=3)
-    img_np = overwrite_image(img_np, points_2d_minus_one.detach().cpu().numpy().squeeze().astype(int), color=(1,1,0), point_size=3)
+    red = (1,0,0)
+    green = (0,1,0)
+    blue = (0,0,1)
+    yellow = (1,1,0)
+    img_np = overwrite_image(img_np, particles.reshape(-1, particles.shape[-1]), color=blue, point_size=1)
+    img_np = overwrite_image(img_np, particles[max_w_idx, :, :], color=red, point_size=1)
+    img_np = overwrite_image(img_np, points_2d.detach().cpu().numpy().squeeze().astype(int), color=green, point_size=3)
+    img_np = overwrite_image(img_np, points_2d_minus_one.detach().cpu().numpy().squeeze().astype(int), color=yellow, point_size=3)
 
     plt.figure(figsize=(15,5))
     # plt.subplot(1,3,1)
@@ -225,8 +228,13 @@ def visualize_panda(particles, joint_angles, cTr, image, points_2d, max_w_idx, p
     # plt.subplot(1,3,2)
     # plt.title("rendering")
     # plt.imshow(rendered_image.squeeze().detach().cpu().numpy())
-
-    plt.savefig(f"./visuals/result{visual_idx}.png", dpi=800, format="png")
+    colors = [blue, red, green, yellow]
+    labels = ["Projected particles", "Max particle", "Current point2d", "Previous point2d"]
+    patches = [ mpatches.Patch(color=colors[i], label=labels[i]) for i in range(len(colors))]
+    # put those patched as legend-handles into the legend
+    plt.legend(handles=patches, bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0. )
+    plt.grid(True)
+    plt.savefig(f"/home/workspace/src/ctrnet-robot-pose-estimation-ros/ros_nodes/visuals/result{visual_idx}.png", dpi=800, format="png")
     visual_idx += 1
     input("Type Enter to continue")
 
@@ -308,7 +316,7 @@ def particle_filter(points_2d, cTr_minus_one, cTr, joint_angles, sigma, m, steps
         pred_cTr[0, :3] = kornia.geometry.conversions.rotation_matrix_to_angle_axis(particles_r[max_w_idx, :, :])
         pred_cTr[0, 3:] = particles_t[max_w_idx, :]
             
-        visualize_panda(z_t_hats_points, joint_angles, cTr_minus_one, image, points_2d, max_w_idx, points_2d_minus_one)
+    visualize_panda(z_t_hats_points, joint_angles, cTr_minus_one, image, points_2d, max_w_idx, points_2d_minus_one)
 
     return pred_cTr.detach()
 
