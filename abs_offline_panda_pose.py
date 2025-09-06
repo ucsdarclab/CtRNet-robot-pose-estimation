@@ -14,6 +14,7 @@ import kornia
 import itertools
 import torch
 import torchvision.transforms as transforms
+from torch.utils.data import DataLoader
 
 from PIL import Image as PILImage
 from models.CtRNet import CtRNet
@@ -31,8 +32,7 @@ from tqdm import tqdm
 import json
 import shutil
 from scipy.spatial.transform import Rotation as R
-from cotracker.utils.visualizer import Visualizer
-from cotracker.predictor import CoTrackerOnlinePredictor
+import imageloaders.panda_step_dataset as psd
 ################################################################
 import argparse
 base_dir = os.path.abspath(".")
@@ -52,7 +52,7 @@ args = parser.parse_args()
 # args.checkpoint = "/home/co-tracker/checkpoints/cotracker3.pth"
 args.base_dir = "/home/workspace/src/orig-ctrnet"
 args.confidence_threshold = 0.15
-args.data_folder = ""
+args.data_folder = "/home/workspace/src/ctrnet-x-rt/moving_panda_dataset/"
 
 args.use_gpu = True
 args.trained_on_multi_gpus = True
@@ -60,10 +60,11 @@ args.keypoint_seg_model_path = os.path.join(args.base_dir,"weights/panda/panda-3
 args.urdf_file = os.path.join(args.base_dir,"urdfs/Panda/panda.urdf")
 args.robot_name = 'Panda'
 args.n_kp = 7
-args.scale = 0.3125
+args.scale = 0.15625
 args.height = 1536
 args.width = 2048
 args.fx, args.fy, args.px, args.py = 967.2597045898438, 967.2623291015625, 1024.62451171875, 772.18994140625
+# args.fx, args.fy, args.px, args.py = 960.41357421875, 960.22314453125, 1021.7171020507812, 776.2381591796875
 
 # scale the camera parameters
 args.width = int(args.width * args.scale)
@@ -84,15 +85,18 @@ trans_to_tensor = transforms.Compose([
 ])
 
 CtRNet = CtRNet(args)
-
-def preprocess_img(cv_img,args):
-    image_pil = PILImage.fromarray(cv_img)
-    width, height = image_pil.size
-    new_size = (int(width*args.scale),int(height*args.scale))
-    image_pil = image_pil.resize(new_size)
-    image = trans_to_tensor(image_pil)
-    return image, image_pil
-
+def collate_single_sample(batch):
+    return batch[0]
+dataset = psd.PandaStepDataset(root_dir=args.data_folder, ep=args.ep, scale = args.scale, trans_to_tensor = trans_to_tensor)
+dl = DataLoader(
+    dataset,
+    batch_size=1,
+    shuffle=False,
+    num_workers=max(2, os.cpu_count()//2),
+    pin_memory=True,
+    prefetch_factor=4,
+    collate_fn=collate_single_sample
+)
 LIGHT_BLUE_PRED = np.array([20, 139, 173], dtype=np.uint8)
 LIGHT_BLUE_GT   = np.array([135, 20, 173], dtype=np.uint8)
 CONTRAST_FACTOR = 10
@@ -156,14 +160,13 @@ def overlay_mask_on_frame(
 
     if contours:
         contour_color = (105, 25, 175) if gt_extr else (50, 100, 210)
-        contour_thickness = 8
+        contour_thickness = 18
         # Comment out next 2 lines for more speed if not needed:
-        # contour_smoothing_factor = 0.001
-        # contours = [cv2.approxPolyDP(c, contour_smoothing_factor * cv2.arcLength(c, True), True) for c in contours]
-        cv2.drawContours(final_frame, contours, -1, contour_color, contour_thickness)
+        contour_smoothing_factor = 0.00001
+        contours = [cv2.approxPolyDP(c, contour_smoothing_factor * cv2.arcLength(c, True), True) for c in contours]
+        cv2.drawContours(final_frame, contours, -1, contour_color, contour_thickness, lineType=cv2.LINE_AA)
 
     return final_frame
-
 
 def overwrite_image(image, points_predicted, color=(0, 255, 0), point_size=8):
     # If many points, consider drawing small filled squares with cv2.polylines or stamping a precomputed disk
@@ -171,8 +174,6 @@ def overwrite_image(image, points_predicted, color=(0, 255, 0), point_size=8):
     for p in pts:
         cv2.circle(image, tuple(p), point_size, color, -1)
     return image
-import numpy as np
-import cv2
 
 def draw_points_sized_by_weight(
     image_bgr,
@@ -192,11 +193,9 @@ def draw_points_sized_by_weight(
     if len(pts_xy) == 0:
         return image_bgr
 
-    # -- normalize weights to [0,1] robustly --
-    w = np.asarray(weights, dtype=np.float32)
+    w = np.asarray(weights.cpu().numpy(), dtype=np.float32)
     w = np.maximum(w, 0.0)
 
-    # avoid one huge weight making others tiny
     lo = np.quantile(w, quantile_clip[0]) if w.size > 4 else w.min()
     hi = np.quantile(w, quantile_clip[1]) if w.size > 4 else w.max()
     if hi <= lo + 1e-12:
@@ -204,20 +203,16 @@ def draw_points_sized_by_weight(
     else:
         w01 = np.clip((w - lo) / (hi - lo), 0.0, 1.0)
 
-    # contrast shaping
     if gamma != 1.0:
         w01 = np.power(w01, gamma)
 
-    # map to integer radii
     radii = (r_min + (r_max - r_min) * w01).astype(np.int32)
     radii = np.clip(radii, r_min, r_max)
 
-    # -- draw (fast: just filled circles) --
     pts = np.rint(np.asarray(pts_xy)).astype(np.int32)
     H, W = image_bgr.shape[:2]
     lt = cv2.LINE_AA if antialias else cv2.LINE_8
 
-    # small ROI bound check to skip off-image draws
     for (x, y), r in zip(pts, radii):
         if r <= 0: 
             continue
@@ -227,12 +222,11 @@ def draw_points_sized_by_weight(
 
     return image_bgr
 
+red = (255, 0, 0)
+green = (0, 255, 0)
+blue = (0, 0, 255)
 def visualize_panda(all_images, all_joint_angles, all_cTr, all_proj_points, all_points_2d, all_ct_points_2d, all_weights, filename):
-    # Prefer OpenCV VideoWriter for speed (but keep imageio if you need consistent codec across envs)
-    # fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    # vw = cv2.VideoWriter(f'./visualization/{filename}.mp4', fourcc, 60, (args.width, args.height))
-    writer = imageio.get_writer(f"./visualization/{filename}.mp4", fps=30)
-    # writer_lossless = imageio.get_writer(f"./visualization/{filename}_lossless.mp4", fps=30)
+    writer_lossless = imageio.get_writer(f"./visualization/{filename}.mp4", fps=30)
     if args.saveframes:
         frames_dir = f"./visualization/{filename}_frames/"
         if os.path.exists(frames_dir):
@@ -251,95 +245,59 @@ def visualize_panda(all_images, all_joint_angles, all_cTr, all_proj_points, all_
         base_dir + "/urdfs/Panda/meshes/visual/hand/hand.obj",
     ]
     robot_renderer = CtRNet.setup_robot_renderer(mesh_files)
-
-    # Collect masks in a list; cat once
     mask_list = []
-
-    # Reusable scratch buffers for overlay to avoid reallocations
-    _scratch = {}
-
-    # Precompute flags & size once
     gt_extr = not (args.justvo or args.novo or args.nopf)
     target_size = (args.width, args.height)
 
     for i in tqdm(range(len(all_images)), desc="saving visualization"):
-        # Render robot mask (keep on device; move to CPU once per frame)
         rendered = CtRNet.render_single_robot_mask(
             all_cTr[i].squeeze(),
             robot_renderer.get_robot_mesh(all_joint_angles[i]),
             robot_renderer
         )
 
-        # Save mask tensor for later (keep as original dtype/device for speed)
-        mask_list.append(rendered)  # don't detach/cpu yet
+        mask_list.append(rendered)
 
-        # Convert to uint8 RGB for overlay (do one detach->cpu only when needed)
         final_image = rendered.squeeze().detach().cpu().numpy()
-        final_image = (final_image * 255).astype(np.uint8)           # assume in [0,1]
-        # If rendered is already single-channel mask, skip color convert; just promote to 3ch later
-        # Here you converted with RGB2BGR previously; if your pipeline expects RGB, skip this swap:
-        # final_image_rgb = cv2.cvtColor(final_image, cv2.COLOR_RGB2BGR)  # (likely unnecessary)
+        final_image = (final_image * 255).astype(np.uint8)
         final_image_rgb = cv2.cvtColor(final_image, cv2.COLOR_GRAY2RGB)
 
-        # Resize inputs once
-        # lossless_img = all_images[i]
-        if all_images[i].shape[1] != target_size[0] or all_images[i].shape[0] != target_size[1]:
-            resized_img = cv2.resize(all_images[i], target_size, interpolation=cv2.INTER_LINEAR)
-        else:
-            resized_img = all_images[i]
-
-        # lossless_image_rgb = final_image_rgb
-        if final_image_rgb.shape[1] != target_size[0] or final_image_rgb.shape[0] != target_size[1]:
-            final_image_rgb = cv2.resize(final_image_rgb, target_size, interpolation=cv2.INTER_LINEAR)
-
-        # Draw previous frame's points onto current image (as in your code)
+        lossless_img = all_images[i]
+        lossless_image_rgb = final_image_rgb
         if all_proj_points and i > 0 and all_proj_points[i - 1] is not None:
-            red = (255, 0, 0)
-            # resized_img = overwrite_image(resized_img, all_proj_points[i - 1].squeeze(), color=red, point_size=3)
-            resized_img = draw_points_sized_by_weight(resized_img, all_proj_points[i - 1].squeeze(), all_weights[i-1], color=red, r_min=1, r_max=3)
-            # upscaled_points_2d = all_points_2d[i - 1]/args.scale
-            # lossless_img = overwrite_image(all_images[i], upscaled_points_2d, color=red, point_size=5)
+            upscaled_proj_points = all_proj_points[i - 1] / args.scale
+            lossless_img = draw_points_sized_by_weight(lossless_img, upscaled_proj_points.cpu().numpy().squeeze(), all_weights[i-1], color=red, r_min=1, r_max=3)
 
         if all_points_2d and i > 0 and all_points_2d[i - 1] is not None:
-            green = (0, 255, 0)
-            blue = (0, 0, 255)
-            resized_img = overwrite_image(resized_img, all_points_2d[i - 1], color=green, point_size=3)
-            if all_ct_points_2d[i - 1] is not None:
-                # upscaled_ct_points_2d = all_ct_points_2d[i - 1]/args.scale
-                # lossless_img = overwrite_image(lossless_img, upscaled_ct_points_2d, color=blue, point_size=5)
-                resized_img = overwrite_image(resized_img, all_ct_points_2d[i - 1], color=blue, point_size=3)
-            # upscaled_points_2d = all_points_2d[i - 1]/args.scale
-            # lossless_img = overwrite_image(all_images[i], upscaled_points_2d, color=green, point_size=5)
-        overlay_frame = overlay_mask_on_frame(
-            resized_img, final_image_rgb, gt_extr, alpha=0.5, _scratch=_scratch
-        )
-        # overlay_frame_lossless = overlay_mask_on_frame(lossless_img, lossless_image_rgb, gt_extr, alpha=0.5, _scratch=_scratch)
+            if all_ct_points_2d and all_ct_points_2d[i - 1] is not None:
+                upscaled_ct_points_2d = all_ct_points_2d[i - 1]/args.scale
+                lossless_img = overwrite_image(lossless_img, upscaled_ct_points_2d.cpu().numpy().squeeze(), color=blue, point_size=5)
+            upscaled_points_2d = all_points_2d[i - 1]/args.scale
+            lossless_img = overwrite_image(all_images[i], upscaled_points_2d.cpu().numpy().squeeze(), color=green, point_size=5)
+        overlay_frame_lossless = overlay_mask_on_frame(lossless_img, lossless_image_rgb, gt_extr, alpha=0.5)
         if args.saveframes:
-            # overlay_frame is RGB; convert to BGR only if using cv2.imwrite
-            bgr_overlay_frame = cv2.cvtColor(overlay_frame, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(f"{frames_dir}/overlay_{str(i).zfill(4)}.png", bgr_overlay_frame)
-            # bgr_overlay_frame_lossless = cv2.cvtColor(overlay_frame_lossless, cv2.COLOR_RGB2BGR)
-            # cv2.imwrite(f"{frames_dir}/overlay_lossless_{str(i).zfill(4)}.png", bgr_overlay_frame_lossless)
+            bgr_overlay_frame_lossless = cv2.cvtColor(overlay_frame_lossless, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(f"{frames_dir}/overlay_lossless_{str(i).zfill(4)}.png", bgr_overlay_frame_lossless)
             bgr_image_frame = cv2.cvtColor(all_images[i], cv2.COLOR_RGB2BGR)
             cv2.imwrite(f"{frames_dir}/raw_{str(i).zfill(4)}.png", bgr_image_frame)
 
-        writer.append_data(overlay_frame)  # RGB uint8
-        # writer_lossless.append_data(overlay_frame_lossless)
-        # vw.write(bgr_overlay_frame)  # if using OpenCV writer
+        writer_lossless.append_data(overlay_frame_lossless)
 
-    writer.close()
-    # writer_lossless.close()
-    # vw.release()
+    writer_lossless.close()
 
-    # Single cat at the end; move to cpu once
-    all_masks = torch.cat([m.detach().cpu() for m in mask_list], dim=0)
-    torch.save(all_masks, f"masks/our_masks/{args.filename}.pt")
-
+#     # Single cat at the end; move to cpu once
+#     all_masks = torch.cat([m.detach().cpu() for m in mask_list], dim=0)
+#     torch.save(all_masks, f"masks/our_masks/{args.filename}.pt")
 def process_step_query(window_frames, is_first_step, query):
     # print(len(window_frames))
     # print(window_frames[0].shape)
+    # video_chunk = (
+    #     torch.tensor(np.stack(window_frames[-model.step * 2 :]), device=device)
+    #     .float()
+    #     .permute(0, 3, 1, 2)[None]
+    # )  # (1, T, 3, H, W)
     video_chunk = (
-        torch.tensor(np.stack(window_frames[-model.step * 2 :]), device=device)
+        torch.tensor(np.stack(window_frames[-model.model.window_len:]), device=device)
         .float()
         .permute(0, 3, 1, 2)[None]
     )  # (1, T, 3, H, W)
@@ -362,9 +320,6 @@ cam_ori = None
 new_cam_data = False
 curr_image = None
 if __name__ == "__main__":
-    # if args.checkpoint is not None:
-    #     model = CoTrackerOnlinePredictor(checkpoint=args.checkpoint)
-    # else:
     model = torch.hub.load("facebookresearch/co-tracker", "cotracker3_online")
     model = model.to(device)
     episode = args.ep
@@ -387,22 +342,15 @@ if __name__ == "__main__":
     all_images = []
     image_paths = []
     all_joint_angles = []
-    for timestamp in timestamps:
-        img_file = steps[timestamp]["img_file"]
-        img_path = os.path.join(episode_dir, "images", img_file)
-        image_paths.append(img_path)
-        all_images.append(cv2.imread(img_path))
-        all_joint_angles.append(np.array(steps[timestamp]["joint_angles"]))
-    init_std = np.array([
+    init_std = torch.tensor([
                 1.0e-2, 1.0e-2, 1.0e-2, # ori
                 1.0e-3, 1.0e-3, 1.0e-3, # pos
-            ])
+            ]).to(device)
     pf = ParticleFilter(num_states=6,
                         init_distribution=sample_gaussian,
                         motion_model=additive_gaussian,
                         obs_model=point_feature_obs,
                         num_particles=args.num_p)
-    # rospy.loginfo("Initialized particle filter")
 
     prev_cTr = None
     use_particle_filter = not args.nopf
@@ -417,6 +365,7 @@ if __name__ == "__main__":
     start_time = time.time()
     T_cam_total = None
     window_size = 80
+    pf_first_step = True
     # CoTracker
     window_frames = []
     all_v_ct_points = []
@@ -426,14 +375,14 @@ if __name__ == "__main__":
     cotracker_points = None
     cotracker_vis = None
     pred_tracks = None
+    i = 0
     warnings.filterwarnings("ignore", message="`XYZW` quaternion coefficient order is deprecated and will be removed after > 0.6. Please use `QuaternionCoeffOrder.WXYZ` instead.")
     # Processing episode
-    for i in tqdm(range(0, len(all_images))):
-        cv_img = cv2.cvtColor(all_images[i], cv2.COLOR_BGR2RGB)
-        image, image_pil = preprocess_img(cv_img,args)
+    for image, joint_angles, cv_img in tqdm(dl):
+        if args.use_gpu:
+            image = image.cuda()
         curr_image = cv_img
         classification_result = {"end-effector": True, "base": True}
-        joint_angles = all_joint_angles[i]
         if not args.novo and not args.nopf:
             cam_pose = cam_poses[i]
         all_v_images.append(curr_image)
@@ -441,24 +390,25 @@ if __name__ == "__main__":
         if not args.justvo or prev_cTr is None:
             with torch.no_grad():
                 cTr, points_2d, mask, confidence = CtRNet.inference_single_image(image, joint_angles)
-                all_v_points_2d.append(points_2d.cpu().numpy())
-                if i == 0:
-                    pf.init_filter(init_std, cTr.cpu().numpy())
+                all_v_points_2d.append(points_2d)
+                if pf_first_step:
+                    pf.init_filter(init_std, cTr)
+                    pf_first_step = False
 
         if use_particle_filter == False:
             # print("PARTICLE FILTER TURNED OFF")
-            pred_T = cTr[:,3:].detach().cpu()
+            # pred_T = cTr[:,3:].detach().cpu()
             all_cTr.append(cTr)
             continue
 
         if prev_cTr is None:
             prev_cTr = cTr
             prev_cam_pose = cam_pose
-            prev_cTr_R = kornia.geometry.conversions.angle_axis_to_rotation_matrix(prev_cTr[:, :3]).detach().cpu()
-            prev_cTr_t = prev_cTr[:, 3:].detach().cpu()
-            T_prev_cTr = np.eye(4,4)
-            T_prev_cTr[:3, :3] = prev_cTr_R
-            T_prev_cTr[:3, 3] = prev_cTr_t
+            # prev_cTr_R = kornia.geometry.conversions.angle_axis_to_rotation_matrix(prev_cTr[:, :3]).detach().cpu()
+            # prev_cTr_t = prev_cTr[:, 3:].detach().cpu()
+            # T_prev_cTr = np.eye(4,4)
+            # T_prev_cTr[:3, :3] = prev_cTr_R
+            # T_prev_cTr[:3, 3] = prev_cTr_t
             all_cTr.append(cTr)
             continue
         
@@ -475,14 +425,16 @@ if __name__ == "__main__":
         window_frames.append(cv_img)
         # Start CoTracker on high confidence points
         if cotracker_query is None:
-            joint_confident_thresh = 7
-            num_joint_confident = torch.sum(torch.gt(confidence, 0.85))
+            print(confidence)
+            joint_confident_thresh = 5
+            num_joint_confident = torch.sum(torch.gt(confidence, 0.80))
             if num_joint_confident >= joint_confident_thresh:
                 print("Created cotracker query")
                 cotracker_query = torch.cat(((torch.ones((7,1))*i).to(device), (points_2d / args.scale).squeeze().to(device)), 1)
                 print(len(window_frames))
                 print(cotracker_query)
-        if i % model.step == 0 and i != 0 and cotracker_query is not None:
+        # if i % model.step == 0 and i != 0 and cotracker_query is not None:
+        if i % model.step == 0 and i >= model.model.window_len - 2 and cotracker_query is not None:
             pred_tracks, pred_visibility = process_step_query(
                 window_frames,
                 is_first_step,
@@ -491,27 +443,30 @@ if __name__ == "__main__":
             is_first_step = False
         if pred_tracks is not None:
             cotracker_points = pred_tracks[:, -1, :, :]
-            cotracker_vis = pred_visibility[:, -1, :].cpu().numpy()
-        cotracker_points_2d = (cotracker_points * args.scale).cpu().numpy() if cotracker_points is not None else None
-        all_v_ct_points.append(cotracker_points_2d)
+            cotracker_vis = pred_visibility[:, -1, :]
+        cotracker_points_2d = (cotracker_points * args.scale) if cotracker_points is not None else None
+        all_v_ct_points.append(cotracker_points_2d if cotracker_points is not None else None)
         # CoTracker End ##################################################################################        
         # Predict Particle filter
-        pred_std = np.array([6.0e-3, 6.0e-3, 6.0e-3,
-                            8.0e-3, 8.0e-3, 8.0e-3])
-        # pred_std = np.array([1.0e-2, 1.0e-2, 1.0e-2,
-        #                     3.0e-2, 3.0e-2, 3.0e-2])
+        # pred_std = torch.tensor([6.0e-3, 6.0e-3, 6.0e-3,
+        #                     8.0e-3, 8.0e-3, 8.0e-3]).to(device)
+        pred_std = torch.tensor([8.0e-3, 8.0e-3, 8.0e-3,
+                            9.0e-3, 9.0e-3, 9.0e-3]).to(device)
+        # pred_std = torch.tensor([2.0e-2, 2.0e-2, 2.0e-2,
+        #                     5.0e-2, 5.0e-2, 5.0e-2]).to(device)
         pf.predict(pred_std, None)
         # Update Particle filter
         cam = None
-        gamma = 0.03
+        gamma = 0.08
         proj_points, point_weights = pf.update(points_2d, cotracker_points_2d, cotracker_vis, CtRNet, joint_angles, cam, prev_cTr, gamma, classification_result, confidence)
 
         best_particle = pf.get_mean_particle()
 
-        all_cTr.append(torch.from_numpy(best_particle).to(device))
+        all_cTr.append(best_particle)
         all_proj_points.append(proj_points)
         all_v_weights.append(point_weights)
+        i += 1
     
-    print(f"FPS: {len(all_images) / (time.time() - start_time)}")
+    print(f"FPS: {len(all_v_images) / (time.time() - start_time)}")
     if args.filename is not None:
         visualize_panda(all_v_images, all_v_joint_angles, all_cTr, all_proj_points, all_v_points_2d, all_v_ct_points, all_v_weights, args.filename)
